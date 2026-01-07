@@ -44,12 +44,19 @@ $ribbonBody = @'
       <tab id="tabTRICSalesTaxes" label="TRIC Sales Taxes">
         <group id="grp0" label="Sales Taxes">
           <button
-            id="btn0"
+            id="btnPrepareWorkbook"
             size="large"
             label="Prepare Workbook"
             imageMso="TableInsert"
             supertip="Creates or refreshes the Tax Summary worksheet and pulls in the data needed for reporting.&#10;&#10;Does not modify your source data. It only generates the summary output."
             onAction="Button_PrepareWorkbook"/>
+          <button 
+            id="btnOpenSquarespaceAccounting"
+            size="large"
+            label="Squarespace Accounting"
+            imageMso="WebPagePreview"
+            supertip="Opens the Squarespace Accounting page in your default web browser to get the required source data."
+            onAction="Button_OpenSquarespaceAccounting"/>
         </group>
       </tab>
     </tabs>

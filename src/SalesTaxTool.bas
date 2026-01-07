@@ -14,6 +14,19 @@ Sub Button_PrepareWorkbook(Control As IRibbonControl)
     format_tric_tax_workbook
 End Sub
 
+sub Button_OpenSquarespaceAccounting(Optional control As IRibbonControl)
+    Const url As String = "https://tric.squarespace.com/config/commerce/selling-tools/accounting"
+
+    On Error GoTo CleanFail
+
+    WB.FollowHyperlink Address:=url, NewWindow:=True
+    Exit Sub
+
+CleanFail:
+    MsgBox "Couldn't open the Squarespace accounting page in your browser." & vbCrLf & vbCrLf & _
+           "URL: " & url, vbExclamation, "TRIC Sales Tax Tools"
+End Sub
+
 Public Sub format_tric_tax_workbook()
     On Error GoTo CleanFail
 

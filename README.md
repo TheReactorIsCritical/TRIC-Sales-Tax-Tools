@@ -33,6 +33,8 @@ The macro must run on specifically formatted accounting data that Squarespace pr
 1. Navigate to https://tric.squarespace.com/config/commerce/selling-tools/accounting
 2. Download the report for the desired time frame
 
+Clicking the `Squarespace Accounting` button on the ribbon toolbar will bring you directly to this page.
+
 ---
 
 ## Repository Structure
