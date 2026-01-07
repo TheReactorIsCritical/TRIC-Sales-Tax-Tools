@@ -31,45 +31,51 @@ if (Test-Path $tempXlsm) { Remove-Item $tempXlsm -Force }
 $xlOpenXMLWorkbookMacroEnabled = 52  # .xlsm
 $xlOpenXMLAddIn  = 55                # .xlam
 
-$ribbonXml2006 = @"
-<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnRibbonLoad">
+# Ribbon XML
+# Keep the inner <ribbon> markup identical for both schemas.
+$ribbonBody = @'
   <ribbon>
     <tabs>
       <tab id="tabTRICSalesTaxes" label="TRIC Sales Taxes">
         <group id="grp0" label="Sales Taxes">
-          <button 
-            id="btn0" 
-            size="large" 
-            label="Prepare Workbook" 
-            imageMso="TableInsert" 
+          <button
+            id="btn0"
+            size="large"
+            label="Prepare Workbook"
+            imageMso="TableInsert"
             supertip="Creates or refreshes the Tax Summary worksheet and pulls in the data needed for reporting.&#10;&#10;Does not modify your source data. It only generates the summary output."
             onAction="Button_PrepareWorkbook"/>
         </group>
       </tab>
     </tabs>
   </ribbon>
-</customUI>
-"@
+'@
 
-$ribbonXml14 = @"
-<customUI xmlns="http://schemas.microsoft.com/office/2009/07/customui" onLoad="OnRibbonLoad">
-  <ribbon>
-    <tabs>
-      <tab id="tabTRICSalesTaxes" label="TRIC Sales Taxes">
-        <group id="grp0" label="Sales Taxes">
-          <button 
-            id="btn0" 
-            size="large" 
-            label="Prepare Workbook" 
-            imageMso="TableInsert" 
-            supertip="Creates or refreshes the Tax Summary worksheet and pulls in the data needed for reporting.&#10;&#10;Does not modify your source data. It only generates the summary output."
-            onAction="Button_PrepareWorkbook"/>
-        </group>
-      </tab>
-    </tabs>
-  </ribbon>
-</customUI>
-"@
+function New-CustomUiXml {
+    param(
+        [Parameter(Mandatory=$true)][string]$NamespaceUri,
+        [Parameter(Mandatory=$true)][string]$OnLoad,
+        [Parameter(Mandatory=$true)][string]$BodyXml
+    )
+
+    # Use CRLF to keep output stable across Windows tooling.
+    $nl = "`r`n"
+    return ('<customUI xmlns="{0}" onLoad="{1}">' -f $NamespaceUri, $OnLoad) +
+        $nl + $BodyXml + $nl +
+        '</customUI>'
+}
+
+$ribbonOnLoad = "OnRibbonLoad"
+
+$ribbonXml2006 = New-CustomUiXml `
+    -NamespaceUri "http://schemas.microsoft.com/office/2006/01/customui" `
+    -OnLoad $ribbonOnLoad `
+    -BodyXml $ribbonBody
+
+$ribbonXml14 = New-CustomUiXml `
+    -NamespaceUri "http://schemas.microsoft.com/office/2009/07/customui" `
+    -OnLoad $ribbonOnLoad `
+    -BodyXml $ribbonBody
 
 
 $excel = $null
@@ -162,12 +168,9 @@ function Add-RibbonXToOpenXmlFile {
             return $sb.ToString()
         }
 
-        # --- Write both ribbon files (exact filenames like the working example) ---
+        # --- Write both ribbon files ---
         Write-ZipText $uiPath2006 $RibbonXml2006
         Write-ZipText $uiPath14   $RibbonXml14
-
-        # --- Add missing person part (present in known-good add-in) ---
-        # This aligns the package with TEST v2.xlam which contains xl/persons/person.xml
         Write-ZipText $personPath $personXml
 
         # --- _rels/.rels : load or create, then ensure BOTH relationships ---
@@ -259,14 +262,14 @@ function Add-RibbonXToOpenXmlFile {
             $typesNode.AppendChild($overrideElem) | Out-Null
         }
 
-        # Match known-good: do NOT declare customUI parts in [Content_Types].xml
-        # (Known-good relies on the root-level ui/extensibility relationships only.)
+        # Do NOT declare customUI parts in [Content_Types].xml
+        # (Known-good examples rely on the root-level ui/extensibility relationships only.)
         foreach ($pn in @('/customUI/customUI.xml','/customUI/customUi14.xml')) {
             $node = $ctDoc.SelectSingleNode("/t:Types/t:Override[@PartName='$pn']", $ctMgr)
             if ($node) { $node.ParentNode.RemoveChild($node) | Out-Null }
         }
 
-        # Ensure the person part is declared (present in known-good)
+        # Ensure the person part is declared
         Ensure-Override "/xl/persons/person.xml" $personCt
 
         Write-ZipText $ctPath (Write-XmlNoDecl $ctDoc)
@@ -297,9 +300,6 @@ try {
         Write-Host ("Importing " + $f.Name)
         $null = $wb.VBProject.VBComponents.Import($f.FullName)
     }
-
-    # Remove default blank modules/sheets? (Optional; usually fine to leave)
-    # If you want to remove the default Sheet1 code module etc, do it later.
 
     # Save as .xlam into AppData AddIns
     if (Test-Path $outXlam) { Remove-Item $outXlam -Force }
