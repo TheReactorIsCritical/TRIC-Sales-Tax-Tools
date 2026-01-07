@@ -1,4 +1,3 @@
-Attribute VB_Name = "SalesTaxTool"
 Option Explicit
 
 Public MyRibbon As IRibbonUI
@@ -16,17 +15,54 @@ Sub Button_PrepareWorkbook(Control As IRibbonControl)
 End Sub
 
 Public Sub format_tric_tax_workbook()
-    'This is the main script that calls everything needed to prepare for quarterly
-    'state sales tax submission.
+    On Error GoTo CleanFail
+
+    ' IMPORTANT: This is an add-in macro. Use the user's active workbook,
+    ' not ThisWorkbook (which points at the .xlam).
+    Dim WB As Workbook
+    Set WB = ActiveWorkbook
+
+    If WB Is Nothing Then
+        MsgBox "No active workbook found. Please open the exported tax workbook and try again.", vbExclamation, "TRIC Sales Tax Tools"
+        Exit Sub
+    End If
+
+    If WB.Name = ThisWorkbook.Name Then
+        MsgBox "Please click into the workbook you want to process (not the add-in) and try again.", vbExclamation, "TRIC Sales Tax Tools"
+        Exit Sub
+    End If
+
+    If Not validate_workbook_data(WB) Then Exit Sub
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
     create_basic_tables
     create_detailed_taxes_table
     create_tax_summary_sheet
 
+CleanExit:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    
+    On Error GoTo 0
+    
     With WB.Worksheets("Tax Summary")
         .Activate
-        Application.GoTo .Range("A1"), Scroll:=True
+        Application.Goto .Range("A1"), Scroll:=True
     End With
     
+    Exit Sub
+
+CleanFail:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+
+    MsgBox "Something went wrong while formatting the tax workbook." & vbCrLf & vbCrLf & _
+           "The workbook may be missing required data or be in an unexpected format." & vbCrLf & _
+           "No changes were made.", vbCritical, "TRIC Sales Tax Tools"
+    
+    On Error GoTo 0
 End Sub
 
 Private Function WB() As Workbook
@@ -34,6 +70,100 @@ Private Function WB() As Workbook
     'I have open. I might change that behavior in the future, so that's why I abstracted it here.
     Set WB = ActiveWorkbook
 End Function
+
+' ------------------------------
+' Validation
+' ------------------------------
+
+Private Function validate_workbook_data(WB As Workbook) As Boolean
+    Dim problems As Collection
+    Set problems = New Collection
+
+    RequireSheet WB, "Orders", problems
+    RequireSheet WB, "Taxes", problems
+    RequireSheet WB, "Sale Line Items", problems
+    RequireSheet WB, "Shipping Line Items", problems
+
+
+    If WorksheetExists(WB, "Orders") Then
+        ' Used by sales and tax aggregation functions (Order ID joins) and date/state logic in formatting.
+        RequireHeaders WB, "Orders", Array("Gross Sales", "Net Sales", "Shipping", "Taxes"), problems
+    End If
+    
+    If WorksheetExists(WB, "Taxes") Then
+        RequireHeaders WB, "Taxes", Array("Order ID", "Jurisdiction Description", "Amount", "Sale Line Item ID", "Shipping Line Item ID"), problems
+    End If
+
+    If WorksheetExists(WB, "Sale Line Items") Then
+        RequireHeaders WB, "Sale Line Items", Array("Sale Line Item ID", "Net Sales"), problems
+    End If
+
+    If WorksheetExists(WB, "Shipping Line Items") Then
+        RequireHeaders WB, "Shipping Line Items", Array("Shipping Line Item ID", "Shipping Amount"), problems
+    End If
+
+    If problems.Count > 0 Then
+        ShowValidationProblems problems
+        validate_workbook_data = False
+    Else
+        validate_workbook_data = True
+    End If
+End Function
+
+Private Sub RequireSheet(WB As Workbook, sheetName As String, problems As Collection)
+    If Not WorksheetExists(WB, sheetName) Then
+        problems.Add "Missing required worksheet: '" & sheetName & "'"
+    End If
+End Sub
+
+Private Function WorksheetExists(WB As Workbook, sheetName As String) As Boolean
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = WB.Worksheets(sheetName)
+    WorksheetExists = Not ws Is Nothing
+    On Error GoTo 0
+End Function
+
+Private Sub RequireHeaders(WB As Workbook, sheetName As String, headers As Variant, problems As Collection)
+    Dim ws As Worksheet
+    Set ws = WB.Worksheets(sheetName)
+
+    Dim header As Variant
+    For Each header In headers
+        If Not HeaderExistsInRow(ws, CStr(header), 1) Then
+            problems.Add "Worksheet '" & sheetName & "' is missing column: '" & header & "'"
+        End If
+    Next header
+End Sub
+
+Private Function HeaderExistsInRow(ws As Worksheet, headerText As String, headerRow As Long) As Boolean
+    Dim lastCol As Long
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+
+    Dim col As Long
+    For col = 1 To lastCol
+        If Trim(ws.Cells(headerRow, col).value) = headerText Then
+            HeaderExistsInRow = True
+            Exit Function
+        End If
+    Next col
+
+    HeaderExistsInRow = False
+End Function
+
+Private Sub ShowValidationProblems(problems As Collection)
+    Dim msg As String
+    msg = "This workbook can't be processed yet:" & vbCrLf & vbCrLf
+
+    Dim p As Variant
+    For Each p In problems
+        msg = msg & "• " & p & vbCrLf
+    Next p
+
+    msg = msg & vbCrLf & "Please fix the issue(s) above and try again."
+
+    MsgBox msg, vbExclamation, "TRIC Sales Tax Tools"
+End Sub
 
 Public Sub create_basic_tables()
 
@@ -245,6 +375,13 @@ Public Sub create_tax_summary_sheet()
     
     Set lo = WB.Worksheets("DetailedTaxes").ListObjects("DetailedTaxes")
     
+    ' Check for WA data. If there isn't any, the pivot table creation will fail because it needs at least 1 row
+    If lo.DataBodyRange Is Nothing Or Application.WorksheetFunction.CountIf(lo.ListColumns("Is WA").DataBodyRange, True) = 0 Then
+        ws.Range("A" & r - 2).value = "No Washington tax entries were found."
+        GoTo Cleanup
+    End If
+    
+    
     ' Build pivot cache from the DetailedTaxes table range
     Set pc = WB.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=lo.Range)
     
@@ -288,7 +425,7 @@ Public Sub create_tax_summary_sheet()
         .ManualUpdate = False
     End With
     
-    
+Cleanup:
     ' Autofit a reasonable width around the pivot area
     ws.Columns("A:H").AutoFit
     
