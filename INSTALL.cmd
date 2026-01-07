@@ -1,14 +1,34 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 
-REM Run the build script with ExecutionPolicy bypass (no global policy changes)
-REM -NoProfile makes it faster and more predictable
-REM -Force overwrites the existing add-in
+set "SCRIPT_DIR=%~dp0"
+set "PS1=%SCRIPT_DIR%build-addin.ps1"
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0build-addin.ps1" -Force
+
+echo --------------------------------------------
+echo INSTALLING THE ADDIN
+echo --------------------------------------------
+echo.
+echo Loading source files...
+echo.
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -Force
+set "EXITCODE=%ERRORLEVEL%"
 
 echo.
-echo If you saw "Built add-in:", you're good.
-echo Next: Excel -> File -> Options -> Add-ins -> Excel Add-ins -> Go... -> Browse -> select the .xlam
+if %EXITCODE% neq 0 goto :fail
+
+echo --------------------------------------------
+echo INSTALL COMPLETE
+echo --------------------------------------------
 echo.
 pause
+exit /b 0
+
+:fail
+echo --------------------------------------------
+echo INSTALL FAILED - exit code %EXITCODE%
+echo --------------------------------------------
+echo.
+pause
+exit /b %EXITCODE%

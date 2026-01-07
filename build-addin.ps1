@@ -20,12 +20,17 @@ if (-not (Test-Path $addinsDir)) {
 }
 
 $outXlam = Join-Path $addinsDir ($AddInName + ".xlam")
+
+# Build to a temp location first, then copy into AddIns folder.
+# This avoids partially overwriting the live add-in if Excel has it loaded.
+$outXlamTemp = Join-Path $env:TEMP ($AddInName + "_build.xlam")
 if ((Test-Path $outXlam) -and (-not $Force)) {
     throw "Add-in already exists: $outXlam (re-run with -Force to overwrite)"
 }
 
 $tempXlsm = Join-Path $env:TEMP ($AddInName + "_build.xlsm")
 if (Test-Path $tempXlsm) { Remove-Item $tempXlsm -Force }
+if (Test-Path $outXlamTemp) { Remove-Item $outXlamTemp -Force }
 
 # Excel constants
 $xlOpenXMLWorkbookMacroEnabled = 52  # .xlsm
@@ -80,6 +85,20 @@ $ribbonXml14 = New-CustomUiXml `
 
 $excel = $null
 $wb = $null
+
+function Test-FileLocked {
+    param([Parameter(Mandatory=$true)][string]$Path)
+
+    if (-not (Test-Path $Path)) { return $false }
+
+    try {
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $fs.Dispose()
+        return $false
+    } catch {
+        return $true
+    }
+}
 
 function Add-RibbonXToOpenXmlFile {
     param(
@@ -281,7 +300,21 @@ function Add-RibbonXToOpenXmlFile {
 
 
 
+$ErrorActionPreference = 'Stop'
+
+$success = $false
+$friendlyError = $null
+$installedPath = $outXlam
+$wasUpdateInstall = $false
+
 try {
+    $wasUpdateInstall = Test-Path $outXlam
+
+    # Preflight: fail fast if Excel has the add-in file locked (avoids slow COM teardown).
+    if (Test-FileLocked -Path $outXlam) {
+        throw "ADDIN_IN_USE"
+    }
+
     $excel = New-Object -ComObject Excel.Application
     $excel.Visible = $false
     $excel.DisplayAlerts = $false
@@ -297,35 +330,101 @@ try {
 
     # Import all .bas modules
     foreach ($f in $basFiles) {
-        Write-Host ("Importing " + $f.Name)
+        Write-Host ("- Importing VBA: " + $f.Name)
         $null = $wb.VBProject.VBComponents.Import($f.FullName)
     }
+    
+    Write-Host ""
+    Write-Host "Finished importing VBA modules. Building..."
 
-    # Save as .xlam into AppData AddIns
-    if (Test-Path $outXlam) { Remove-Item $outXlam -Force }
-    $wb.SaveAs($outXlam, $xlOpenXMLAddIn)
+    # Save as .xlam to TEMP first (so we never corrupt/partially overwrite the live add-in)
+    if (Test-Path $outXlamTemp) { Remove-Item $outXlamTemp -Force }
+    $wb.SaveAs($outXlamTemp, $xlOpenXMLAddIn)
 
+    # Close workbook before mutating the OpenXML package
     $wb.Close($false)
+    $wb = $null
 
-    Add-RibbonXToOpenXmlFile -OpenXmlPath $outXlam -RibbonXml2006 $ribbonXml2006 -RibbonXml14 $ribbonXml14
+    Add-RibbonXToOpenXmlFile -OpenXmlPath $outXlamTemp -RibbonXml2006 $ribbonXml2006 -RibbonXml14 $ribbonXml14
 
+    # Try to install into the Excel AddIns folder.
+    if (Test-FileLocked -Path $outXlam) {
+        throw "ADDIN_IN_USE"
+    }
+
+    Copy-Item -Path $outXlamTemp -Destination $outXlam -Force
 
     # Unblock output (helps if user downloaded repo zip)
     try {
         Unblock-File -Path $outXlam -ErrorAction SilentlyContinue
     } catch {}
 
-    Write-Host ""
-    Write-Host "Built add-in:"
-    Write-Host $outXlam
-    Write-Host ""
-    Write-Host "Next: In Excel -> File -> Options -> Add-ins -> Excel Add-ins -> Go... -> Browse -> select it"
+    $success = $true
+}
+catch {
+    if ($_.Exception.Message -eq 'ADDIN_IN_USE') {
+        $friendlyError = "Cannot overwrite '$outXlam' because Excel is currently using it.
+
+Close Excel (or disable/unload the add-in), then run INSTALL.cmd again."
+    } else {
+        # Prefer a concise message for non-technical users, but keep it truthful.
+        $friendlyError = $_.Exception.Message
+    }
+
+    $success = $false
 }
 finally {
+    Write-Host ""
+    Write-Host "Cleaning up temporary files..."
     if ($wb -ne $null) { try { $wb.Close($false) } catch {} }
     if ($excel -ne $null) {
         try { $excel.Quit() } catch {}
-        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null
+        try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null } catch {}
     }
-    if (Test-Path $tempXlsm) { Remove-Item $tempXlsm -Force }
+
+    # Cleanup temp artifacts
+    if (Test-Path $tempXlsm) { try { Remove-Item $tempXlsm -Force } catch {} }
+    if (Test-Path $outXlamTemp) { try { Remove-Item $outXlamTemp -Force } catch {} }
 }
+
+# ---- User-facing output AFTER cleanup (prevents "dead air" after messages) ----
+Write-Host ""
+
+if (-not $success) {
+    Write-Host "--------------------------------------------"
+    Write-Host "BUILD FAILED"
+    Write-Host "--------------------------------------------"
+    Write-Host ""
+    Write-Host $friendlyError
+    Write-Host ""
+    exit 1
+}
+
+Write-Host "--------------------------------------------"
+Write-Host "BUILD SUCCESS"
+Write-Host "--------------------------------------------"
+Write-Host ""
+Write-Host "Add-in installed at:"
+Write-Host "  $installedPath"
+Write-Host ""
+
+if ($wasUpdateInstall) {
+    Write-Host "Update note:"
+    Write-Host "  If the add-in was already enabled, you do NOT need to re-enable it."
+    Write-Host "  Just restart Excel to load the updated version."
+    Write-Host ""
+    Write-Host "If you have never enabled it before, enable it once using:"
+} else {
+    Write-Host "To enable the add-in:" 
+}
+
+Write-Host "  1) Open Excel"
+Write-Host "  2) File -> Options -> Add-ins"
+Write-Host "  3) Manage: Excel Add-ins -> Go..."
+Write-Host "  4) Browse... -> select the add-in file above"
+Write-Host "  5) Click OK"
+
+
+Write-Host ""
+Write-Host "Tip: If Excel was open during install, restart Excel to be safe."
+exit 0
