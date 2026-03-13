@@ -1,14 +1,7 @@
 # TRIC Sales Tax Tools
 
-TRIC Sales Tax Tools is an Excel add-in (`.xlam`) that helps prepare workbooks for sales tax reporting by generating a structured **Tax Summary** worksheet from existing data.
-
-This repository contains:
-
-- The VBA source code (`.bas`) used by the add-in
-- A deterministic PowerShell build script that assembles the add-in
-- A simple installer (`INSTALL.cmd`) for end users
-
-The goal is a **repeatable, source-controlled build** that produces a clean Excel add-in with a custom ribbon UI — without manual editing inside Excel.
+TRIC Sales Tax Tools is an Excel add-in (`.xlam`) that helps prepare workbooks for sales tax reporting by
+generating a structured **Tax Summary** worksheet from existing data.
 
 ---
 
@@ -22,9 +15,7 @@ Once installed and enabled in Excel, it adds a **TRIC Sales Taxes** tab to the r
 - Collects and organizes the data needed for sales tax reporting
 - Does **not** modify your original source data
 
-The result will look like this:
-
-![Example formatted data after running the 'Prepare Workbook' button macro](./screenshots/formatted_table_after_prepare_workbook.JPG)
+Pressing the button multiple times is safe and will recreate the Tax Summary sheet.
 
 ## Download the Report Data
 
@@ -37,12 +28,45 @@ Clicking the `Squarespace Accounting` button on the ribbon toolbar will bring yo
 
 ---
 
+## Remitting Sales Tax
+
+The Tax Summary sheet shows the retailing gross amount and interstate apportionment for both WA and TN.
+Taxable income is the difference between those two amounts.
+
+TN requires us to report and remit tax annually based on the Tennessee taxable income shown in the summary.
+
+WA requires quarterly reporting and remittance. WA also uses more complex tax jurisdictions, since the
+state, counties, cities, and transit authorities can each receive portions of the tax collected.
+However, when reporting to the WA Department of Revenue, we report each sale under its most specific
+applicable jurisdiction bucket rather than breaking the sale out manually across every tax recipient.
+The DOR will handle the distribution task on their end.
+
+The WA Tax Jurisdiction Pivot table groups sales into those most specific jurisdiction buckets for filing.
+
+As a validation check, the grand total of Gross Plus Shipping in the WA Tax Jurisdiction Pivot should
+match the Washington Taxable Income shown in the summary section at the top of the sheet.
+
+Perform tax remittance at:
+
+- [Tennessee Taxpayer Access Point](https://tntap.tn.gov/eservices/_/)
+- [Secure Access Washington](https://secureaccess.wa.gov/)
+
+---
+
 ## Repository Structure
+
+This repository contains:
+
+- The VBA source code (`.bas`) used by the add-in
+- A deterministic PowerShell build script that assembles the add-in
+- A simple installer (`INSTALL.cmd`) for end users
+
+The goal is a **repeatable, source-controlled build** that produces a clean Excel add-in with a custom ribbon UI
+without manual editing inside Excel.
 
 ```
 TRIC-Sales-Tax-Tools/
 │
-├─ screenshots/               # For demonstration in the README
 ├─ src/
 │  └─ SalesTaxTool.bas        # VBA source (source of truth)
 │

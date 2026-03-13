@@ -10,11 +10,11 @@ Sub OnRibbonLoad(Ribbon As IRibbonUI)
   MyRibbon.ActivateTab "tabTRICSalesTaxes"
 End Sub
 
-Sub Button_PrepareWorkbook(Control As IRibbonControl)
+Sub Button_PrepareWorkbook(control As IRibbonControl)
     format_tric_tax_workbook
 End Sub
 
-sub Button_OpenSquarespaceAccounting(Optional control As IRibbonControl)
+Sub Button_OpenSquarespaceAccounting(Optional control As IRibbonControl)
     Const url As String = "https://tric.squarespace.com/config/commerce/selling-tools/accounting"
 
     On Error GoTo CleanFail
@@ -24,6 +24,19 @@ sub Button_OpenSquarespaceAccounting(Optional control As IRibbonControl)
 
 CleanFail:
     MsgBox "Couldn't open the Squarespace accounting page in your browser." & vbCrLf & vbCrLf & _
+           "URL: " & url, vbExclamation, "TRIC Sales Tax Tools"
+End Sub
+
+sub Button_OpenGithubRepository(Optional control As IRibbonControl)
+    Const url As String = "https://github.com/TheReactorIsCritical/TRIC-Sales-Tax-Tools"
+
+    On Error GoTo CleanFail
+
+    WB.FollowHyperlink Address:=url, NewWindow:=True
+    Exit Sub
+
+CleanFail:
+    MsgBox "Couldn't open the tool's GitHub repository page in your browser." & vbCrLf & vbCrLf & _
            "URL: " & url, vbExclamation, "TRIC Sales Tax Tools"
 End Sub
 
@@ -51,6 +64,7 @@ Public Sub format_tric_tax_workbook()
     Application.EnableEvents = False
 
     create_basic_tables
+    create_tax_jurisdiction_table
     create_detailed_taxes_table
     create_tax_summary_sheet
 
@@ -62,7 +76,7 @@ CleanExit:
     
     With WB.Worksheets("Tax Summary")
         .Activate
-        Application.Goto .Range("A1"), Scroll:=True
+        Application.GoTo .Range("A1"), Scroll:=True
     End With
     
     Exit Sub
@@ -170,7 +184,7 @@ Private Sub ShowValidationProblems(problems As Collection)
 
     Dim p As Variant
     For Each p In problems
-        msg = msg & "• " & p & vbCrLf
+        msg = msg & "â€¢ " & p & vbCrLf
     Next p
 
     msg = msg & vbCrLf & "Please fix the issue(s) above and try again."
@@ -203,7 +217,137 @@ Public Sub create_basic_tables()
     
 End Sub
 
+Public Sub create_tax_jurisdiction_table()
+' This is the new way of getting the tax buckets. WA requires the sum of gross product revenue
+' plus the money you collected for shipping expenses. This table gets that, the jurisdiction
+' that each order belongs to, and the taxes as well for later sanity checking on taxes collected
+' vs. what the state says you owe.
+
+    Dim src As ListObject
+    Dim ws As Worksheet
+    Dim dict As Object
+    Dim orderRange As Range
+    Dim jurisdictionRange As Range
+    Dim i As Long
+    Dim orderId As String
+    Dim jurisdictionDescription As String
+    Dim rowCount As Long
+    Dim outRng As Range
+    Dim lo As ListObject
+    Dim key As Variant
+    Dim writeRow As Long
+    
+    ' Source table
+    Set src = GetTable("Taxes")
+    If src Is Nothing Then
+        Err.Raise vbObjectError + 3000, , "Taxes table not found."
+    End If
+    
+    If src.DataBodyRange Is Nothing Then
+        Err.Raise vbObjectError + 3001, , "Taxes table is empty."
+    End If
+    
+    Set orderRange = src.ListColumns("Order ID").DataBodyRange
+    Set jurisdictionRange = src.ListColumns("Jurisdiction Description").DataBodyRange
+    
+    ' Build dictionary: Order ID -> longest Jurisdiction Description
+    Set dict = CreateObject("Scripting.Dictionary")
+    
+    For i = 1 To orderRange.Rows.Count
+        orderId = CStr(orderRange.Cells(i, 1).value)
+        jurisdictionDescription = CStr(jurisdictionRange.Cells(i, 1).value)
+        
+        If Not dict.Exists(orderId) Then
+            dict.Add orderId, jurisdictionDescription
+        ElseIf Len(jurisdictionDescription) > Len(dict(orderId)) Then
+            dict(orderId) = jurisdictionDescription
+        End If
+    Next i
+    
+    ' Create or clear destination sheet
+    Set ws = GetOrCreateWorksheet("Tax Jurisdiction Lookup")
+    ws.Cells.Clear
+    
+    ' Write headers
+    ws.Range("A1").value = "Order ID"
+    ws.Range("B1").value = "Most Detailed Jurisdiction"
+    ws.Range("C1").value = "State"
+    ws.Range("D1").value = "County"
+    ws.Range("E1").value = "Jurisdiction"
+    ws.Range("F1").value = "Gross Plus Shipping"
+    ws.Range("G1").value = "Taxes"
+    
+    ' Write dictionary contents
+    writeRow = 2
+    For Each key In dict.Keys
+        ws.Cells(writeRow, 1).value = key
+        ws.Cells(writeRow, 2).value = dict(key)
+        writeRow = writeRow + 1
+    Next key
+    
+    rowCount = dict.Count
+    
+    ' Remove existing table if present
+    On Error Resume Next
+    ws.ListObjects("TaxJurisdictionLookup").Unlist
+    On Error GoTo 0
+    
+    ' Create table
+    Set outRng = ws.Range("A1").Resize(rowCount + 1, 7)
+    Set lo = ws.ListObjects.Add(xlSrcRange, outRng, , xlYes)
+    lo.Name = "TaxJurisdictionLookup"
+    lo.TableStyle = "TableStyleMedium2"
+    
+    ' Fill helper formulas
+    If rowCount > 0 Then
+        Dim sep As String
+        sep = Application.International(xlListSeparator)
+        
+        ' State
+        lo.ListColumns("State").DataBodyRange.Formula = _
+            "=IFERROR(TEXTBEFORE(TEXTAFTER([@[Most Detailed Jurisdiction]],""STATE:""),"",""),"""")"
+        
+        ' County
+        lo.ListColumns("County").DataBodyRange.Formula = _
+            "=IFERROR(TEXTBEFORE(TEXTAFTER([@[Most Detailed Jurisdiction]],""COUNTY:""),"",""),"""")"
+        
+        ' Jurisdiction
+        lo.ListColumns("Jurisdiction").DataBodyRange.Formula = _
+            "=IF(ISNUMBER(SEARCH(""CITY:"",[@[Most Detailed Jurisdiction]])),IFERROR(TEXTBEFORE(TEXTAFTER([@[Most Detailed Jurisdiction]],""CITY:""),"",""),TEXTAFTER([@[Most Detailed Jurisdiction]],""CITY:"")),IF([@[County]]<>"""",[@County]&"" COUNTY UNINCORPORATED"",""""))"
+        
+        ' Gross Plus Shipping
+        lo.ListColumns("Gross Plus Shipping").DataBodyRange.Formula = _
+            "=XLOOKUP([@[Order ID]]&""" & """" & sep & _
+            "Orders[Order ID]&""" & """" & sep & _
+            "Orders[Gross Sales]" & sep & _
+            "0)+XLOOKUP([@[Order ID]]&""" & """" & sep & _
+            "Orders[Order ID]&""" & """" & sep & _
+            "Orders[Shipping]" & sep & _
+            "0)"
+        
+        ' Taxes
+        lo.ListColumns("Taxes").DataBodyRange.Formula = _
+            "=XLOOKUP([@[Order ID]]&""" & """" & sep & _
+            "Orders[Order ID]&""" & """" & sep & _
+            "Orders[Taxes]" & sep & _
+            "0)"
+        
+        ' Put them in currency format
+        lo.ListColumns("Gross Plus Shipping").DataBodyRange.NumberFormat = Application.International(xlCurrencyCode) & "#,##0.00"
+        lo.ListColumns("Taxes").DataBodyRange.NumberFormat = Application.International(xlCurrencyCode) & "#,##0.00"
+    End If
+    
+    ws.Columns.AutoFit
+End Sub
+
 Public Sub create_detailed_taxes_table()
+' NOTE: This table is retired in place. It makes a detailed breakdown of where each tax
+' collection comes from for every order. This is useful to see where the different taxes
+' are going to, but it isn't useful for remitting sales tax to the state. The state just
+' buckets these categories, you file your revenue in that bucket, and then they distribute
+' it accordingly on their end. This table is left in place in case this method changes
+' in the future.
+
     Dim src As ListObject
     Dim ws As Worksheet
     Dim nRows As Long, nCols As Long
@@ -227,8 +371,8 @@ Public Sub create_detailed_taxes_table()
     Set ws = GetOrCreateWorksheet("DetailedTaxes")
     ws.Cells.Clear
 
-    ' Output columns (5 copied + 2 calculated)
-    nCols = 8
+    ' Output columns (5 copied + 4 calculated)
+    nCols = 9
 
     ' Create the output range including header row (+ data rows)
     Set outRng = ws.Range("A1").Resize(nRows + 1, nCols)
@@ -242,6 +386,7 @@ Public Sub create_detailed_taxes_table()
     outRng.Cells(1, 6).value = "Sale Revenue"
     outRng.Cells(1, 7).value = "Shipping Revenue"
     outRng.Cells(1, 8).value = "Is WA"
+    outRng.Cells(1, 9).value = "Reporting Jurisdiction"
     
     ' Copy data columns (if there are rows)
     If nRows > 0 Then
@@ -282,6 +427,10 @@ Public Sub create_detailed_taxes_table()
             
         lo.ListColumns("Is WA").DataBodyRange.Formula = _
             "=ISNUMBER(SEARCH(""STATE:WA"",[@[Jurisdiction Description]]))"
+            
+        lo.ListColumns("Reporting Jurisdiction").DataBodyRange.Formula = _
+            "=XLOOKUP([@[Order ID]],TaxJurisdictionLookup[Order ID],TaxJurisdictionLookup[Most Detailed Jurisdiction],"""")"
+    
     End If
     
     
@@ -324,33 +473,53 @@ Public Sub create_tax_summary_sheet()
     WriteLineItem ws, r, "Gross Sales", GrossSales(): r = r + 1
     WriteLineItem ws, r, "Net Sales", NetSales(): r = r + 1
     WriteLineItem ws, r, "Shipping Sales", ShippingSales(): r = r + 1
+    WriteLineItem ws, r, "Retailing Gross Amount", RetailingGrossAmount(): r = r + 1
 
+    ' Emphasize final line
+    With ws.Range("A" & (r - 1) & ":B" & (r - 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 242, 204) ' light highlight
+    End With
+    
     r = r + 1
 
     ' ---- Washington section ----
     WriteSectionHeader ws, r, "Washington"
     r = r + 1
 
-    WriteLineItem ws, r, "Gross Sales (WA)", StateGrossSales("WA"): r = r + 1
-    WriteLineItem ws, r, "Net Sales (WA)", StateNetSales("WA"): r = r + 1
-    WriteLineItem ws, r, "Shipping Sales (WA)", StateShippingSales("WA"): r = r + 1
-
-    r = r + 1
-
-    ' ---- Derived amounts ----
-    WriteSectionHeader ws, r, "Derived"
-    r = r + 1
-
-    WriteLineItem ws, r, "Interstate Discount", InterstateDiscount(): r = r + 1
     WriteLineItem ws, r, "Retailing Gross Amount", RetailingGrossAmount(): r = r + 1
-    WriteLineItem ws, r, "Interstate / Foreign Apportionment", InterstateForeignApportionment(): r = r + 1
-    WriteLineItem ws, r, "Washington Taxable Income", WashingtonTaxableIncome(): r = r + 1
+    WriteLineItem ws, r, "Interstate / Foreign Apportionment", InterstateForeignApportionment("WA"): r = r + 1
+    WriteLineItem ws, r, "Taxable Income (WA)", TaxableIncome("WA"): r = r + 1
+
+    ' Emphasize final line
+    With ws.Range("A" & (r - 1) & ":B" & (r - 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 242, 204) ' light highlight
+    End With
+    
+    r = r + 1
+
+    ' ---- Tennessee section ----
+    WriteSectionHeader ws, r, "Tennessee"
+    r = r + 1
+
+    WriteLineItem ws, r, "Retailing Gross Amount", RetailingGrossAmount(): r = r + 1
+    WriteLineItem ws, r, "Interstate / Foreign Apportionment", InterstateForeignApportionment("TN"): r = r + 1
+    WriteLineItem ws, r, "Taxable Income (TN)", TaxableIncome("TN"): r = r + 1
+    
+    ' Emphasize final line
+    With ws.Range("A" & (r - 1) & ":B" & (r - 1))
+        .Font.Bold = True
+        .Interior.Color = RGB(255, 242, 204) ' light highlight
+    End With
+    
+    r = r + 1
 
     ' Styling for the whole summary block
     Dim lastRow As Long
     lastRow = r - 1
 
-    With ws.Range("A4:B" & lastRow)
+    With ws.Range("A4:B" & lastRow - 1)
         .Borders.LineStyle = xlContinuous
         .Borders.Weight = xlThin
     End With
@@ -360,12 +529,6 @@ Public Sub create_tax_summary_sheet()
 
     ' Currency formatting for value column (except header rows)
     ws.Range("B5:B" & lastRow).NumberFormat = "$#,##0.00"
-
-    ' Emphasize final line (Washington Taxable Income)
-    With ws.Range("A" & (lastRow) & ":B" & (lastRow))
-        .Font.Bold = True
-        .Interior.Color = RGB(255, 242, 204) ' light highlight
-    End With
 
     ' Spacer before pivot
     r = lastRow + 4
@@ -386,16 +549,15 @@ Public Sub create_tax_summary_sheet()
     ' Clear any old pivot data if there is any; "z" is just a far column to catch everything
     ws.Range(dest, ws.Cells(ws.Rows.Count, "Z")).Clear
     
-    Set lo = WB.Worksheets("DetailedTaxes").ListObjects("DetailedTaxes")
-    
-    ' Check for WA data. If there isn't any, the pivot table creation will fail because it needs at least 1 row
-    If lo.DataBodyRange Is Nothing Or Application.WorksheetFunction.CountIf(lo.ListColumns("Is WA").DataBodyRange, True) = 0 Then
-        ws.Range("A" & r - 2).value = "No Washington tax entries were found."
+    Set lo = WB.Worksheets("Tax Jurisdiction Lookup").ListObjects("TaxJurisdictionLookup")
+
+    ' Check for data. If there isn't any, the pivot table creation will fail because it needs at least 1 row
+    If lo.DataBodyRange Is Nothing Then
+        ws.Range("A" & r - 2).value = "No tax jurisdiction lookup entries were found."
         GoTo Cleanup
     End If
     
-    
-    ' Build pivot cache from the DetailedTaxes table range
+    ' Build pivot cache from the TaxJurisdictionLookup table range
     Set pc = WB.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=lo.Range)
     
     ' Create pivot table
@@ -404,37 +566,33 @@ Public Sub create_tax_summary_sheet()
     ' --- Configure fields ---
     With pt
         .ManualUpdate = True
-
+    
         ' Row fields (in order)
-        .PivotFields("Jurisdiction Description").Orientation = xlRowField
-        .PivotFields("Jurisdiction Description").Position = 1
-
-        .PivotFields("Order ID").Orientation = xlRowField
-        .PivotFields("Order ID").Position = 2
-
-        ' Values (in order)
-        .AddDataField .PivotFields("Amount"), "Sum of Amount", xlSum
-        .AddDataField .PivotFields("Shipping Revenue"), "Sum of Shipping Revenue", xlSum
-        .AddDataField .PivotFields("Sale Revenue"), "Sum of Sale Revenue", xlSum
-
+        .PivotFields("Jurisdiction").Orientation = xlRowField
+        .PivotFields("Jurisdiction").Position = 1
+    
+        ' Values
+        .AddDataField .PivotFields("Gross Plus Shipping"), "Sum of Gross Plus Shipping", xlSum
+        .AddDataField .PivotFields("Taxes"), "Sum of Taxes", xlSum
+        
+        ' Filter to WA only
+        With .PivotFields("State")
+            .Orientation = xlPageField
+            .Position = 1
+            .CurrentPage = "WA"
+        End With
+    
         ' Make it readable
         .RowAxisLayout xlTabularRow
         .RepeatAllLabels xlRepeatLabels
         .NullString = ""
         .DisplayErrorString = True
         .ErrorString = ""
-
+    
         ' Number formatting for value fields
-        .DataFields("Sum of Amount").NumberFormat = "$#,##0.00"
-        .DataFields("Sum of Shipping Revenue").NumberFormat = "$#,##0.00"
-        .DataFields("Sum of Sale Revenue").NumberFormat = "$#,##0.00"
-        
-        With .PivotFields("Is WA")
-            .Orientation = xlPageField
-            .Position = 1
-            .CurrentPage = "TRUE"
-        End With
-
+        .DataFields("Sum of Gross Plus Shipping").NumberFormat = "$#,##0.00"
+        .DataFields("Sum of Taxes").NumberFormat = "$#,##0.00"
+    
         .ManualUpdate = False
     End With
     
@@ -665,19 +823,15 @@ Public Function StateTaxes(stateCode As String) As Double
     End If
 End Function
 
-Public Function InterstateDiscount() As Double
-    InterstateDiscount = NetSales() - StateGrossSales("WA")
-End Function
-
 Public Function RetailingGrossAmount() As Double
     RetailingGrossAmount = GrossSales() + ShippingSales()
 End Function
 
-Public Function InterstateForeignApportionment() As Double
+Public Function InterstateForeignApportionment(stateCode As String) As Double
     '(all non-WA gross sales) + (all non-WA shipping)
-    InterstateForeignApportionment = GrossSales() - StateGrossSales("WA") + ShippingSales() - StateShippingSales("WA")
+    InterstateForeignApportionment = GrossSales() - StateGrossSales(stateCode) + ShippingSales() - StateShippingSales(stateCode)
 End Function
 
-Public Function WashingtonTaxableIncome() As Double
-    WashingtonTaxableIncome = RetailingGrossAmount - InterstateForeignApportionment()
+Public Function TaxableIncome(stateCode As String) As Double
+    TaxableIncome = RetailingGrossAmount - InterstateForeignApportionment(stateCode)
 End Function

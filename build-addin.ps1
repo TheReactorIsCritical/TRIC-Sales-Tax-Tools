@@ -57,6 +57,13 @@ $ribbonBody = @'
             imageMso="WebPagePreview"
             supertip="Opens the Squarespace Accounting page in your default web browser to get the required source data."
             onAction="Button_OpenSquarespaceAccounting"/>
+          <button 
+            id="btnOpenGithubRepository"
+            size="large"
+            label="Documentation"
+            imageMso="Help"
+            supertip="Opens the GitHub repository page in your default web browser."
+            onAction="Button_OpenGithubRepository"/>
         </group>
       </tab>
     </tabs>
